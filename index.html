@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -248,13 +247,19 @@
             align-items: center;
             justify-content: center;
             z-index: 1000;
+            overflow: hidden;
         }
         .fullscreen-overlay img {
             max-width: 90%;
             max-height: 90%;
             border-radius: 8px;
-            transform: scale(1);
+            transform: scale(1) translate(0, 0);
             transition: transform 0.3s ease;
+            cursor: grab;
+            touch-action: none;
+        }
+        .fullscreen-overlay img.dragging {
+            cursor: grabbing;
         }
         .fullscreen-overlay .close-btn {
             position: absolute;
@@ -652,12 +657,16 @@
         let historyStack = [];
         let currentImageIndex = -1;
         let imageSources = [];
-        let currentGroupIndex = -1;
-        let currentGrade = '';
+        let currentScale = 1;
+        let translateX = 0;
+        let translateY = 0;
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let pinchStartDistance = 0;
         let batchGrade = '';
         let batchSection = '';
         let db;
-        let currentScale = 1; // متغير لتتبع مستوى التحجيم
         const dbName = "KashfDB";
         const dbVersion = 1;
 
@@ -878,7 +887,6 @@
             renderKashfTable();
             document.getElementById('studentName').value = '';
             debouncedAutoSave();
-            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -906,7 +914,6 @@
             renderKashfTable();
             document.getElementById('multipleStudents').value = '';
             debouncedAutoSave();
-            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -989,7 +996,6 @@
                 [students[index], students[index - 1]] = [students[index - 1], students[index]];
                 renderKashfTable();
                 debouncedAutoSave();
-                saveToHistory();
             }
         }
 
@@ -998,7 +1004,6 @@
                 [students[index], students[index + 1]] = [students[index + 1], students[index]];
                 renderKashfTable();
                 debouncedAutoSave();
-                saveToHistory();
             }
         }
 
@@ -1015,7 +1020,6 @@
             students.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
             renderKashfTable();
             debouncedAutoSave();
-            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1027,18 +1031,16 @@
             } else if (behavior && behavior !== '') {
                 students[index].score = Math.max(0, students[index].score - 2);
             }
-            filterKashfTable();
+            renderKashfTable();
             debouncedAutoSave();
-            saveToHistory();
         }
 
         function incrementScore(index, field) {
             const currentScore = students[index][field];
             if (currentScore < 10) {
                 students[index][field] = currentScore + 1;
-                filterKashfTable();
+                renderKashfTable();
                 debouncedAutoSave();
-                saveToHistory();
             }
         }
 
@@ -1046,9 +1048,8 @@
             const currentScore = students[index][field];
             if (currentScore > 0) {
                 students[index][field] = currentScore - 1;
-                filterKashfTable();
+                renderKashfTable();
                 debouncedAutoSave();
-                saveToHistory();
             }
         }
 
@@ -1080,7 +1081,6 @@
             savedStudents.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
             renderSavedTable();
             debouncedAutoSave();
-            saveToHistory();
         }
 
         function saveAllStudents() {
@@ -1111,7 +1111,6 @@
             students.splice(index, 1);
             renderKashfTable();
             debouncedAutoSave();
-            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1120,7 +1119,6 @@
             students = [];
             renderKashfTable();
             debouncedAutoSave();
-            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1272,14 +1270,12 @@
         function updateSavedStudentNotes(index, notes) {
             savedStudents[index].notes = notes;
             debouncedAutoSave();
-            saveToHistory();
         }
 
         function deleteSavedStudent(index) {
             savedStudents.splice(index, 1);
             renderSavedTable();
             debouncedAutoSave();
-            saveToHistory();
         }
 
         function filterSavedTable() {
@@ -1559,6 +1555,8 @@
             imageSources = [];
             currentImageIndex = -1;
             currentScale = 1;
+            translateX = 0;
+            translateY = 0;
             for (const grade in mediaGroups) {
                 mediaGroups[grade].forEach(group => {
                     group.forEach(item => {
@@ -1575,8 +1573,13 @@
                 const overlay = document.getElementById('fullscreenOverlay');
                 const fullscreenImage = document.getElementById('fullscreenImage');
                 fullscreenImage.src = url;
-                fullscreenImage.style.transform = `scale(${currentScale})`;
+                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
                 overlay.style.display = 'flex';
+
+                // إضافة معالجات أحداث اللمس
+                fullscreenImage.addEventListener('touchstart', handleTouchStart);
+                fullscreenImage.addEventListener('touchmove', handleTouchMove);
+                fullscreenImage.addEventListener('touchend', handleTouchEnd);
             }
         }
 
@@ -1587,7 +1590,12 @@
             currentImageIndex = -1;
             imageSources = [];
             currentScale = 1;
-            fullscreenImage.style.transform = `scale(${currentScale})`;
+            translateX = 0;
+            translateY = 0;
+            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+            fullscreenImage.removeEventListener('touchstart', handleTouchStart);
+            fullscreenImage.removeEventListener('touchmove', handleTouchMove);
+            fullscreenImage.removeEventListener('touchend', handleTouchEnd);
         }
 
         function navigateImages(direction) {
@@ -1596,23 +1604,76 @@
             const fullscreenImage = document.getElementById('fullscreenImage');
             fullscreenImage.src = imageSources[currentImageIndex];
             currentScale = 1;
-            fullscreenImage.style.transform = `scale(${currentScale})`;
+            translateX = 0;
+            translateY = 0;
+            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
         }
 
         function zoomImage(delta) {
             const fullscreenImage = document.getElementById('fullscreenImage');
             currentScale = Math.max(0.1, Math.min(5, currentScale + delta));
-            fullscreenImage.style.transform = `scale(${currentScale})`;
+            if (currentScale <= 1) {
+                translateX = 0;
+                translateY = 0;
+            }
+            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
         }
 
-        function saveToHistory() {
-            historyStack.push({
-                students: JSON.parse(JSON.stringify(students)),
-                savedStudents: JSON.parse(JSON.stringify(savedStudents)),
-                mediaGroups: JSON.parse(JSON.stringify(mediaGroups))
-            });
+        function handleTouchStart(event) {
+            event.preventDefault();
+            const touches = event.touches;
+            if (touches.length === 1) {
+                isDragging = true;
+                startX = touches[0].clientX - translateX;
+                startY = touches[0].clientY - translateY;
+                document.getElementById('fullscreenImage').classList.add('dragging');
+            } else if (touches.length === 2) {
+                const dx = touches[0].clientX - touches[1].clientX;
+                const dy = touches[0].clientY - touches[1].clientY;
+                pinchStartDistance = Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+
+        function handleTouchMove(event) {
+            event.preventDefault();
+            const touches = event.touches;
+            const fullscreenImage = document.getElementById('fullscreenImage');
+            if (touches.length === 1 && isDragging) {
+                translateX = touches[0].clientX - startX;
+                translateY = touches[0].clientY - startY;
+                const img = fullscreenImage;
+                const rect = img.getBoundingClientRect();
+                const maxTranslateX = (rect.width * currentScale - window.innerWidth) / (2 * currentScale);
+                const maxTranslateY = (rect.height * currentScale - window.innerHeight) / (2 * currentScale);
+                translateX = Math.max(-maxTranslateX, Math.min(maxTranslateX, translateX));
+                translateY = Math.max(-maxTranslateY, Math.min(maxTranslateY, translateY));
+                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+            } else if (touches.length === 2) {
+                const dx = touches[0].clientX - touches[1].clientX;
+                const dy = touches[0].clientY - touches[1].clientY;
+                const currentDistance = Math.sqrt(dx * dx + dy * dy);
+                const scaleChange = currentDistance / pinchStartDistance;
+                currentScale = Math.max(0.1, Math.min(5, currentScale * scaleChange));
+                if (currentScale <= 1) {
+                    translateX = 0;
+                    translateY = 0;
+                }
+                pinchStartDistance = currentDistance;
+                const img = fullscreenImage;
+                const rect = img.getBoundingClientRect();
+                const maxTranslateX = (rect.width * currentScale - window.innerWidth) / (2 * currentScale);
+                const maxTranslateY = (rect.height * currentScale - window.innerHeight) / (2 * currentScale);
+                translateX = Math.max(-maxTranslateX, Math.min(maxTranslateX, translateX));
+                translateY = Math.max(-maxTranslateY, Math.min(maxTranslateY, translateY));
+                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+            }
+        }
+
+        function handleTouchEnd(event) {
+            isDragging = false;
+            document.getElementById('fullscreenImage').classList.remove('dragging');
+            pinchStartDistance = 0;
         }
     </script>
 </body>
 </html>
-```
