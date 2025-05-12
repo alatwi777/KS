@@ -6,6 +6,7 @@
     <title>كشف المتابعة اليومي</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -129,8 +130,6 @@
         .upload-btn:hover { background-color: #E64A19; }
         .add-link-btn { background-color: #9C27B0; }
         .add-link-btn:hover { background-color: #7B1FA2; }
-        .open-btn { background-color: #0288D1; }
-        .open-btn:hover { background-color: #0277BD; }
         .checkbox-group {
             display: flex;
             flex-direction: row;
@@ -247,19 +246,12 @@
             align-items: center;
             justify-content: center;
             z-index: 1000;
-            overflow: hidden;
         }
         .fullscreen-overlay img {
             max-width: 90%;
             max-height: 90%;
             border-radius: 8px;
-            transform: scale(1) translate(0, 0);
-            transition: transform 0.3s ease;
-            cursor: grab;
-            touch-action: none;
-        }
-        .fullscreen-overlay img.dragging {
-            cursor: grabbing;
+            transform-origin: center;
         }
         .fullscreen-overlay .close-btn {
             position: absolute;
@@ -295,28 +287,6 @@
         }
         .fullscreen-overlay .next-btn {
             right: 20px;
-        }
-        .fullscreen-overlay .zoom-btn {
-            position: absolute;
-            bottom: 20px;
-            background: #4CAF50;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-        .fullscreen-overlay .zoom-btn:hover {
-            background: #45a049;
-        }
-        .fullscreen-overlay .zoom-in-btn {
-            left: 50%;
-            transform: translateX(-60px);
-        }
-        .fullscreen-overlay .zoom-out-btn {
-            left: 50%;
-            transform: translateX(20px);
         }
         #statsChart {
             max-width: 600px;
@@ -360,6 +330,7 @@
             max-height: 400px;
             border-radius: 8px;
             cursor: pointer;
+            transform-origin: center;
         }
         .media-slide video, .media-slide iframe, .media-slide audio {
             max-width: 100%;
@@ -469,6 +440,9 @@
                 <button class="delete-all-btn" onclick="deleteAllKashfRows()">حذف الكل</button>
                 <button class="save-all-btn" onclick="saveAllStudents()">حفظ الكل</button>
                 <button class="export-btn" onclick="exportKashfToExcel()">تصدير إلى Excel</button>
+            </div>
+            <div class="control-section">
+                <input type="text" id="searchStudent" placeholder="ابحث عن طالب" oninput="filterKashfTable()">
             </div>
             <div class="control-section">
                 <div id="multipleStudentsContainer" style="display: block;">
@@ -644,8 +618,6 @@
             <button class="close-btn" onclick="closeFullscreen()">إغلاق</button>
             <button class="nav-btn prev-btn" onclick="navigateImages(-1)">❮</button>
             <button class="nav-btn next-btn" onclick="navigateImages(1)">❯</button>
-            <button class="zoom-btn zoom-in-btn" onclick="zoomImage(0.1)">+</button>
-            <button class="zoom-btn zoom-out-btn" onclick="zoomImage(-0.1)">-</button>
         </div>
     </div>
     <script>
@@ -657,13 +629,6 @@
         let historyStack = [];
         let currentImageIndex = -1;
         let imageSources = [];
-        let currentScale = 1;
-        let translateX = 0;
-        let translateY = 0;
-        let isDragging = false;
-        let startX = 0;
-        let startY = 0;
-        let pinchStartDistance = 0;
         let batchGrade = '';
         let batchSection = '';
         let db;
@@ -686,6 +651,7 @@
                 console.log('تم الحفظ التلقائي بنجاح');
             } catch (error) {
                 console.error('خطأ في الحفظ التلقائي:', error);
+                alert('حدث خطأ أثناء الحفظ التلقائي. يرجى المحاولة مرة أخرى.');
             }
         }
 
@@ -705,7 +671,7 @@
                     resolve();
                 };
                 request.onerror = function(event) {
-                    console.error("Error opening IndexedDB:", event.target.error);
+                    console.error("خطأ في فتح IndexedDB:", event.target.error);
                     reject(event.target.error);
                 };
             });
@@ -718,7 +684,7 @@
                 renderKashfTable();
                 openTab({ currentTarget: document.querySelector('.tablinks.kashf-tab') }, 'kashf');
             } catch (error) {
-                console.error("Error during initialization:", error);
+                console.error("خطأ أثناء التهيئة:", error);
                 alert("حدث خطأ أثناء تحميل البيانات. يرجى المحاولة مرة أخرى.");
             }
         };
@@ -754,28 +720,43 @@
         }
 
         async function saveMediaData() {
-            const transaction = db.transaction(['mediaGroups'], 'readwrite');
-            const store = transaction.objectStore('mediaGroups');
-            await store.clear();
-            let id = 1;
-            const chunkSize = 5 * 1024 * 1024;
-            for (const grade in mediaGroups) {
-                for (const group of mediaGroups[grade]) {
-                    const chunkedGroup = [];
-                    for (const item of group) {
-                        if (item.blob && item.blob.size > chunkSize) {
-                            const chunks = [];
-                            for (let start = 0; start < item.blob.size; start += chunkSize) {
-                                const chunk = item.blob.slice(start, start + chunkSize);
-                                chunks.push(chunk);
+            try {
+                const transaction = db.transaction(['mediaGroups'], 'readwrite');
+                const store = transaction.objectStore('mediaGroups');
+                await new Promise((resolve, reject) => {
+                    const clearRequest = store.clear();
+                    clearRequest.onsuccess = () => resolve();
+                    clearRequest.onerror = () => reject(clearRequest.error);
+                });
+
+                let id = 1;
+                const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+                for (const grade in mediaGroups) {
+                    for (const group of mediaGroups[grade]) {
+                        const chunkedGroup = [];
+                        for (const item of group) {
+                            if (item.blob && item.blob.size > chunkSize) {
+                                const chunks = [];
+                                for (let start = 0; start < item.blob.size; start += chunkSize) {
+                                    const chunk = item.blob.slice(start, start + chunkSize);
+                                    chunks.push(chunk);
+                                }
+                                chunkedGroup.push({ ...item, chunks, blob: null });
+                            } else {
+                                chunkedGroup.push(item);
                             }
-                            chunkedGroup.push({ ...item, chunks, blob: null });
-                        } else {
-                            chunkedGroup.push(item);
                         }
+                        await new Promise((resolve, reject) => {
+                            const addRequest = store.add({ id: id++, grade: grade, data: chunkedGroup });
+                            addRequest.onsuccess = () => resolve();
+                            addRequest.onerror = () => reject(addRequest.error);
+                        });
                     }
-                    store.add({ id: id++, grade: grade, data: chunkedGroup });
                 }
+                console.log('تم حفظ بيانات الوسائط بنجاح في IndexedDB');
+            } catch (error) {
+                console.error('خطأ في حفظ بيانات الوسائط:', error);
+                throw error;
             }
         }
 
@@ -801,7 +782,7 @@
                     resolve();
                 };
                 request.onerror = function(event) {
-                    console.error("Error loading media data:", event.target.error);
+                    console.error("خطأ في تحميل بيانات الوسائط:", event.target.error);
                     resolve();
                 };
             });
@@ -833,7 +814,19 @@
                     renderSavedTable();
                 }
             } catch (error) {
-                console.error(`Error in tab "${tabName}":`, error);
+                console.error(`خطأ في تبويب "${tabName}":`, error);
+                alert(`حدث خطأ في تبويب ${tabName}. يرجى المحاولة مرة أخرى.`);
+            }
+        }
+
+        function saveToHistory() {
+            historyStack.push({
+                students: JSON.parse(JSON.stringify(students)),
+                savedStudents: JSON.parse(JSON.stringify(savedStudents)),
+                mediaGroups: JSON.parse(JSON.stringify(mediaGroups))
+            });
+            if (historyStack.length > 50) {
+                historyStack.shift();
             }
         }
 
@@ -887,6 +880,7 @@
             renderKashfTable();
             document.getElementById('studentName').value = '';
             debouncedAutoSave();
+            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -914,6 +908,7 @@
             renderKashfTable();
             document.getElementById('multipleStudents').value = '';
             debouncedAutoSave();
+            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -932,6 +927,7 @@
             noStudentsMessage.style.display = 'none';
             students.forEach((student, index) => {
                 const row = document.createElement('tr');
+                row.draggable = true;
                 row.innerHTML = `
                     <td>
                         <div class="move-control">
@@ -996,6 +992,7 @@
                 [students[index], students[index - 1]] = [students[index - 1], students[index]];
                 renderKashfTable();
                 debouncedAutoSave();
+                saveToHistory();
             }
         }
 
@@ -1004,6 +1001,7 @@
                 [students[index], students[index + 1]] = [students[index + 1], students[index]];
                 renderKashfTable();
                 debouncedAutoSave();
+                saveToHistory();
             }
         }
 
@@ -1020,6 +1018,7 @@
             students.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
             renderKashfTable();
             debouncedAutoSave();
+            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1031,16 +1030,18 @@
             } else if (behavior && behavior !== '') {
                 students[index].score = Math.max(0, students[index].score - 2);
             }
-            renderKashfTable();
+            filterKashfTable();
             debouncedAutoSave();
+            saveToHistory();
         }
 
         function incrementScore(index, field) {
             const currentScore = students[index][field];
             if (currentScore < 10) {
                 students[index][field] = currentScore + 1;
-                renderKashfTable();
+                filterKashfTable();
                 debouncedAutoSave();
+                saveToHistory();
             }
         }
 
@@ -1048,8 +1049,9 @@
             const currentScore = students[index][field];
             if (currentScore > 0) {
                 students[index][field] = currentScore - 1;
-                renderKashfTable();
+                filterKashfTable();
                 debouncedAutoSave();
+                saveToHistory();
             }
         }
 
@@ -1081,6 +1083,7 @@
             savedStudents.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
             renderSavedTable();
             debouncedAutoSave();
+            saveToHistory();
         }
 
         function saveAllStudents() {
@@ -1111,6 +1114,7 @@
             students.splice(index, 1);
             renderKashfTable();
             debouncedAutoSave();
+            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1119,6 +1123,7 @@
             students = [];
             renderKashfTable();
             debouncedAutoSave();
+            saveToHistory();
             updateSendSections();
             updateFilteredStudentList();
         }
@@ -1139,9 +1144,11 @@
         function filterKashfTable() {
             const gradeFilter = document.getElementById('filterKashfGrade').value;
             const sectionFilter = document.getElementById('filterKashfSection').value;
+            const searchQuery = document.getElementById('searchStudent').value.trim().toLowerCase();
             const filteredStudents = students.filter(student => 
                 (!gradeFilter || student.grade === gradeFilter) &&
-                (!sectionFilter || student.section === sectionFilter)
+                (!sectionFilter || student.section === sectionFilter) &&
+                (!searchQuery || student.name.toLowerCase().includes(searchQuery))
             );
             const tableBody = document.getElementById('tableBody');
             tableBody.innerHTML = '';
@@ -1149,6 +1156,7 @@
             noStudentsMessage.style.display = 'none';
             filteredStudents.forEach((student, index) => {
                 const row = document.createElement('tr');
+                row.draggable = true;
                 row.innerHTML = `
                     <td>
                         <div class="move-control">
@@ -1201,159 +1209,91 @@
                 `;
                 tableBody.appendChild(row);
             });
-            if (filteredStudents.length === 0 && (gradeFilter || sectionFilter)) {
+            if (filteredStudents.length === 0) {
                 noStudentsMessage.style.display = 'block';
                 noStudentsMessage.textContent = 'لا توجد أسماء تتطابق مع التصفية. حاول تغيير الصف أو الفصل.';
             }
         }
 
-        function exportKashfToExcel() {
-            const tempTable = document.createElement('table');
-            tempTable.innerHTML = `
-                <thead>
-                    <tr>
-                        <th>الاسم</th>
-                        <th>الصف</th>
-                        <th>الفصل</th>
-                        <th>السلوك</th>
-                        <th>الدرجة</th>
-                        <th>م</th>
-                        <th>و</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            `;
-            const tempTableBody = tempTable.querySelector('tbody');
-            students.forEach(student => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${student.name}</td>
-                    <td>${student.grade}</td>
-                    <td>${student.section}</td>
-                    <td>${student.behavior}</td>
-                    <td>${student.score}</td>
-                    <td>${student.participationScore}</td>
-                    <td>${student.homeworkScore}</td>
-                `;
-                tempTableBody.appendChild(row);
-            });
-            const ws = XLSX.utils.table_to_sheet(tempTable);
-            const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'كشف المتابعة');
-            XLSX.writeFile(wb, 'كشف_المتابعة.xlsx');
-        }
-
         function renderSavedTable() {
             const tableBody = document.getElementById('savedTableBody');
             tableBody.innerHTML = '';
-            savedStudents.forEach((student, index) => {
+            const gradeFilter = document.getElementById('filterGrade').value;
+            const filteredStudents = savedStudents.filter(student => !gradeFilter || student.grade === gradeFilter);
+            filteredStudents.forEach((student, index) => {
+                const behaviorsList = student.behaviors.map(b => `${b.date} (${b.day}): ${b.behavior}, الدرجة: ${b.score}, المشاركة: ${b.participationScore}, الواجب: ${b.homeworkScore}`).join('<br>');
                 const row = document.createElement('tr');
-                const behaviorsHtml = student.behaviors.map(entry => `
-                    <div class="behavior-entry">${entry.behavior} (${entry.day} - ${entry.date})</div>
-                `).join('');
-                const scoresHtml = student.behaviors.map(entry => `
-                    <div class="behavior-entry">${entry.score}</div>
-                `).join('');
                 row.innerHTML = `
                     <td>${student.name}</td>
-                    <td>${student.grade}</td>
-                    <td>${student.section}</td>
-                    <td>${behaviorsHtml}</td>
-                    <td>${scoresHtml}</td>
-                    <td><input type="text" value="${student.notes || ''}" onchange="updateSavedStudentNotes(${index}, this.value)"></td>
+                    <td>${student.grade || 'غير محدد'}</td>
+                    <td>${student.section || 'غير محدد'}</td>
+                    <td>${behaviorsList}</td>
+                    <td>${student.behaviors[student.behaviors.length - 1]?.score || 'غير محدد'}</td>
+                    <td><textarea placeholder="أضف ملاحظات" onchange="updateNotes(${index}, this.value)">${student.notes}</textarea></td>
                     <td><button class="delete-btn" onclick="deleteSavedStudent(${index})">حذف</button></td>
                 `;
                 tableBody.appendChild(row);
             });
         }
 
-        function updateSavedStudentNotes(index, notes) {
+        function updateNotes(index, notes) {
             savedStudents[index].notes = notes;
             debouncedAutoSave();
+            saveToHistory();
         }
 
         function deleteSavedStudent(index) {
             savedStudents.splice(index, 1);
             renderSavedTable();
             debouncedAutoSave();
+            saveToHistory();
         }
 
         function filterSavedTable() {
-            const gradeFilter = document.getElementById('filterGrade').value;
-            const filteredStudents = savedStudents.filter(student => !gradeFilter || student.grade === gradeFilter);
-            const tableBody = document.getElementById('savedTableBody');
-            tableBody.innerHTML = '';
-            filteredStudents.forEach((student, index) => {
-                const row = document.createElement('tr');
-                const behaviorsHtml = student.behaviors.map(entry => `
-                    <div class="behavior-entry">${entry.behavior} (${entry.day} - ${entry.date})</div>
-                `).join('');
-                const scoresHtml = student.behaviors.map(entry => `
-                    <div class="behavior-entry">${entry.score}</div>
-                `).join('');
-                row.innerHTML = `
-                    <td>${student.name}</td>
-                    <td>${student.grade}</td>
-                    <td>${student.section}</td>
-                    <td>${behaviorsHtml}</td>
-                    <td>${scoresHtml}</td>
-                    <td><input type="text" value="${student.notes || ''}" onchange="updateSavedStudentNotes(${savedStudents.indexOf(student)}, this.value)"></td>
-                    <td><button class="delete-btn" onclick="deleteSavedStudent(${savedStudents.indexOf(student)})">حذف</button></td>
-                `;
-                tableBody.appendChild(row);
+            renderSavedTable();
+        }
+
+        function exportKashfToExcel() {
+            const filteredStudents = students.filter(student => {
+                const gradeFilter = document.getElementById('filterKashfGrade').value;
+                const sectionFilter = document.getElementById('filterKashfSection').value;
+                return (!gradeFilter || student.grade === gradeFilter) &&
+                       (!sectionFilter || student.section === sectionFilter);
             });
+            const data = filteredStudents.map(student => ({
+                'الاسم': student.name,
+                'الصف': student.grade || 'غير محدد',
+                'الفصل': student.section || 'غير محدد',
+                'السلوك': student.behavior || 'غير محدد',
+                'الدرجة': student.score,
+                'المشاركة': student.participationScore,
+                'الواجب': student.homeworkScore
+            }));
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "كشف يومي");
+            XLSX.writeFile(wb, "كشف_يومي.xlsx");
         }
 
         function exportToExcel() {
-            const table = document.getElementById('savedTable');
-            const ws = XLSX.utils.table_to_sheet(table);
+            const gradeFilter = document.getElementById('filterGrade').value;
+            const filteredStudents = savedStudents.filter(student => !gradeFilter || student.grade === gradeFilter);
+            const data = filteredStudents.map(student => ({
+                'الاسم': student.name,
+                'الصف': student.grade || 'غير محدد',
+                'الفصل': student.section || 'غير محدد',
+                'السلوكيات': student.behaviors.map(b => `${b.date} (${b.day}): ${b.behavior}, الدرجة: ${b.score}, المشاركة: ${b.participationScore}, الواجب: ${b.homeworkScore}`).join('; '),
+                'الملاحظات': student.notes
+            }));
+            const ws = XLSX.utils.json_to_sheet(data);
             const wb = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(wb, ws, 'كشف المتابعة');
-            XLSX.writeFile(wb, 'كشف_المتابعة.xlsx');
-        }
-
-        function updateStatsChart() {
-            const grade = document.getElementById('statsGrade').value;
-            const section = document.getElementById('statsSection').value;
-            const filteredStudents = savedStudents.filter(student => 
-                (!grade || student.grade === grade) &&
-                (!section || student.section === section)
-            );
-            const behaviorCounts = { 'نسي الكتاب': 0, 'التحدث أثناء الدرس': 0, 'متأخر': 0, 'نائم': 0, 'رجوع': 0 };
-            filteredStudents.forEach(student => {
-                student.behaviors.forEach(entry => {
-                    if (entry.behavior && behaviorCounts.hasOwnProperty(entry.behavior)) {
-                        behaviorCounts[entry.behavior]++;
-                    }
-                });
-            });
-            const ctx = document.getElementById('statsChart').getContext('2d');
-            if (statsChart) statsChart.destroy();
-            statsChart = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: Object.keys(behaviorCounts),
-                    datasets: [{
-                        label: 'عدد المخالفات',
-                        data: Object.values(behaviorCounts),
-                        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'],
-                        borderColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'],
-                        borderWidth: 1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: { position: 'top' },
-                        title: { display: true, text: 'إحصائيات السلوك' }
-                    }
-                }
-            });
+            XLSX.utils.book_append_sheet(wb, ws, "جدول الإدخال");
+            XLSX.writeFile(wb, "جدول_الإدخال.xlsx");
         }
 
         function updateStatsSections() {
-            const grade = document.getElementById('statsGrade').value;
-            const sections = [...new Set(savedStudents.filter(s => !grade || s.grade === grade).map(s => s.section).filter(s => s))];
+            const gradeFilter = document.getElementById('statsGrade').value;
+            const sections = [...new Set(savedStudents.filter(s => !gradeFilter || s.grade === gradeFilter).map(s => s.section).filter(s => s))];
             const sectionSelect = document.getElementById('statsSection');
             sectionSelect.innerHTML = '<option value="">اختر الفصل</option>';
             sections.forEach(section => {
@@ -1364,9 +1304,51 @@
             });
         }
 
+        function updateStatsChart() {
+            const gradeFilter = document.getElementById('statsGrade').value;
+            const sectionFilter = document.getElementById('statsSection').value;
+            const filteredStudents = savedStudents.filter(student => 
+                (!gradeFilter || student.grade === gradeFilter) &&
+                (!sectionFilter || student.section === sectionFilter)
+            );
+            const behaviorCounts = {};
+            filteredStudents.forEach(student => {
+                student.behaviors.forEach(behavior => {
+                    behaviorCounts[behavior.behavior] = (behaviorCounts[behavior.behavior] || 0) + 1;
+                });
+            });
+            const labels = Object.keys(behaviorCounts);
+            const data = Object.values(behaviorCounts);
+            const ctx = document.getElementById('statsChart').getContext('2d');
+            if (statsChart) statsChart.destroy();
+            statsChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'عدد السلوكيات',
+                        data: data,
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         function updateSendSections() {
-            const grade = document.getElementById('sendGrade').value;
-            const sections = [...new Set(students.filter(s => !grade || s.grade === grade).map(s => s.section).filter(s => s))];
+            const gradeFilter = document.getElementById('sendGrade').value;
+            const sections = [...new Set(students.filter(s => !gradeFilter || s.grade === gradeFilter).map(s => s.section).filter(s => s))];
             const sectionSelect = document.getElementById('sendSection');
             sectionSelect.innerHTML = '<option value="">اختر الفصل</option>';
             sections.forEach(section => {
@@ -1379,11 +1361,11 @@
         }
 
         function updateFilteredStudentList() {
-            const grade = document.getElementById('sendGrade').value;
-            const section = document.getElementById('sendSection').value;
-            const filteredStudents = students.filter(student => 
-                (!grade || student.grade === grade) &&
-                (!section || student.section === section)
+            const gradeFilter = document.getElementById('sendGrade').value;
+            const sectionFilter = document.getElementById('sendSection').value;
+            const filteredStudents = savedStudents.filter(student => 
+                (!gradeFilter || student.grade === gradeFilter) &&
+                (!sectionFilter || student.section === sectionFilter)
             );
             const studentSelect = document.getElementById('filteredStudents');
             studentSelect.innerHTML = '<option value="">اختر الطالب</option>';
@@ -1393,97 +1375,133 @@
                 option.textContent = student.name;
                 studentSelect.appendChild(option);
             });
+            document.getElementById('studentDetailsTable').style.display = 'none';
+            document.getElementById('whatsappButton').style.display = 'none';
         }
 
         function displayStudentDetails() {
             const studentName = document.getElementById('filteredStudents').value;
-            if (!studentName) {
-                document.getElementById('studentDetailsTable').style.display = 'none';
-                document.getElementById('whatsappButton').style.display = 'none';
-                return;
-            }
-            const studentRecords = savedStudents.filter(s => s.name === studentName);
+            const gradeFilter = document.getElementById('sendGrade').value;
+            const sectionFilter = document.getElementById('sendSection').value;
+            const student = savedStudents.find(s => 
+                s.name === studentName && 
+                (!gradeFilter || s.grade === gradeFilter) && 
+                (!sectionFilter || s.section === sectionFilter)
+            );
+            const table = document.getElementById('studentDetailsTable');
             const tableBody = document.getElementById('studentDetailsBody');
             tableBody.innerHTML = '';
-            studentRecords.forEach(record => {
-                const behaviorsList = record.behaviors.map(entry => `${entry.behavior} (${entry.day} - ${entry.date})`).join('<br>');
-                const scoresList = record.behaviors.map(entry => entry.score).join('<br>');
+            if (student) {
+                const behaviorsList = student.behaviors.map(b => `${b.date} (${b.day}): ${b.behavior}, الدرجة: ${b.score}, المشاركة: ${b.participationScore}, الواجب: ${b.homeworkScore}`).join('<br>');
                 const row = document.createElement('tr');
                 row.innerHTML = `
-                    <td>${record.name}</td>
-                    <td>${record.grade}</td>
-                    <td>${record.section}</td>
+                    <td>${student.name}</td>
+                    <td>${student.grade || 'غير محدد'}</td>
+                    <td>${student.section || 'غير محدد'}</td>
                     <td>${behaviorsList}</td>
-                    <td>${scoresList}</td>
-                    <td>${record.notes || ''}</td>
+                    <td>${student.behaviors[student.behaviors.length - 1]?.score || 'غير محدد'}</td>
+                    <td>${student.notes || 'لا توجد ملاحظات'}</td>
                 `;
                 tableBody.appendChild(row);
-            });
-            document.getElementById('studentDetailsTable').style.display = 'table';
-            document.getElementById('whatsappButton').style.display = 'block';
+                table.style.display = 'table';
+                document.getElementById('whatsappButton').style.display = 'block';
+            } else {
+                table.style.display = 'none';
+                document.getElementById('whatsappButton').style.display = 'none';
+            }
         }
 
         function sendToWhatsApp() {
             const studentName = document.getElementById('filteredStudents').value;
-            const studentRecords = savedStudents.filter(s => s.name === studentName);
-            let message = `تقرير الطالب: ${studentName}\n\n`;
-            studentRecords.forEach(record => {
-                record.behaviors.forEach(entry => {
-                    message += `التاريخ: ${entry.date}\n`;
-                    message += `الصف: ${record.grade}\n`;
-                    message += `الفصل: ${record.section}\n`;
-                    message += `السلوك: ${entry.behavior}\n`;
-                    message += `الدرجة: ${entry.score}\n`;
-                    message += `ملاحظات: ${record.notes || ''}\n\n`;
-                });
-            });
-            const encodedMessage = encodeURIComponent(message);
-            const whatsappUrl = `https://api.whatsapp.com/send?text=${encodedMessage}`;
-            window.open(whatsappUrl, '_blank');
+            const gradeFilter = document.getElementById('sendGrade').value;
+            const sectionFilter = document.getElementById('sendSection').value;
+            const student = savedStudents.find(s => 
+                s.name === studentName && 
+                (!gradeFilter || s.grade === gradeFilter) && 
+                (!sectionFilter || s.section === sectionFilter)
+            );
+            if (student) {
+                const behaviorsList = student.behaviors.map(b => `${b.date} (${b.day}): ${b.behavior}, الدرجة: ${b.score}, المشاركة: ${b.participationScore}, الواجب: ${b.homeworkScore}`).join('\n');
+                const message = `تقرير الطالب: ${student.name}\nالصف: ${student.grade || 'غير محدد'}\nالفصل: ${student.section || 'غير محدد'}\nالسلوكيات:\n${behaviorsList}\nالملاحظات: ${student.notes || 'لا توجد ملاحظات'}`;
+                const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(message)}`;
+                window.open(whatsappUrl, '_blank');
+            }
         }
 
         async function handleMediaUpload(event, grade) {
-            const files = event.target.files;
-            if (!grade) {
-                alert('يرجى اختيار الصف');
-                return;
-            }
-            if (!files.length) return;
-            const newGroup = [];
+            const files = Array.from(event.target.files);
+            const maxSize = 100 * 1024 * 1024; // 100MB
+            console.log(`جاري رفع ${files.length} ملفات للصف ${grade}...`);
+
             for (const file of files) {
-                const url = URL.createObjectURL(file);
-                newGroup.push({
-                    blob: file,
-                    url: url,
-                    type: file.type,
-                    name: file.name,
-                    description: ''
-                });
+                if (file.size > maxSize) {
+                    alert(`الملف ${file.name} كبير جدًا! الحد الأقصى 100 ميجابايت.`);
+                    console.warn(`الملف ${file.name} كبير جدًا: ${file.size} بايت`);
+                    continue;
+                }
+                try {
+                    const url = URL.createObjectURL(file);
+                    const mediaItem = {
+                        type: file.type,
+                        url: url,
+                        blob: file,
+                        description: ''
+                    };
+                    console.log(`تم رفع الملف ${file.name} بنجاح: ${file.type}`);
+
+                    if (!mediaGroups[grade]) {
+                        mediaGroups[grade] = [];
+                    }
+                    if (mediaGroups[grade].length === 0 || mediaGroups[grade][mediaGroups[grade].length - 1].length >= 2) {
+                        mediaGroups[grade].push([]);
+                    }
+                    mediaGroups[grade][mediaGroups[grade].length - 1].push(mediaItem);
+                } catch (error) {
+                    console.error(`خطأ في رفع الملف ${file.name}:`, error);
+                    alert(`حدث خطأ أثناء رفع الملف ${file.name}. يرجى المحاولة مرة أخرى.`);
+                }
             }
-            mediaGroups[grade].push(newGroup);
+
             renderMediaItems();
-            debouncedAutoSave();
+            await debouncedAutoSave();
+            saveToHistory();
+            console.log(`تم تحديث العرض وحفظ التغييرات للصف ${grade}`);
         }
 
-        function addMediaFromLink() {
+        async function addMediaFromLink() {
             const link = document.getElementById('mediaLink').value.trim();
             const grade = document.getElementById('mediaGradeSelect').value;
             if (!link || !grade) {
-                alert('يرجى إدخال الرابط واختيار الصف');
+                alert('يرجى إدخال رابط واختيار الصف');
                 return;
             }
-            const type = link.includes('.pdf') ? 'application/pdf' : link.match(/\.(jpeg|jpg|png|gif)$/i) ? 'image' : link.match(/\.(mp4|webm|ogg)$/i) ? 'video' : 'other';
-            const newGroup = [{
-                url: link,
+            let type = 'external';
+            if (link.match(/\.(jpeg|jpg|gif|png)$/i)) {
+                type = 'image/external';
+            } else if (link.match(/\.(mp4|webm|ogg)$/i)) {
+                type = 'video/external';
+            } else if (link.match(/\.(mp3|wav|ogg)$/i)) {
+                type = 'audio/external';
+            } else if (link.match(/\.(pdf)$/i)) {
+                type = 'application/pdf';
+            }
+            const mediaItem = {
                 type: type,
-                name: link.split('/').pop(),
-                description: '',
-                blob: null
-            }];
-            mediaGroups[grade].push(newGroup);
-            renderMediaItems();
+                url: link,
+                description: ''
+            };
+            if (!mediaGroups[grade]) {
+                mediaGroups[grade] = [];
+            }
+            if (mediaGroups[grade].length === 0 || mediaGroups[grade][mediaGroups[grade].length - 1].length >= 2) {
+                mediaGroups[grade].push([]);
+            }
+            mediaGroups[grade][mediaGroups[grade].length - 1].push(mediaItem);
             document.getElementById('mediaLink').value = '';
-            debouncedAutoSave();
+            document.getElementById('mediaGradeSelect').value = '';
+            renderMediaItems();
+            await debouncedAutoSave();
+            saveToHistory();
         }
 
         function renderMediaItems() {
@@ -1491,189 +1509,198 @@
             container.innerHTML = '';
             for (const grade in mediaGroups) {
                 if (mediaGroups[grade].length === 0) continue;
-                const gradeDiv = document.createElement('div');
-                gradeDiv.className = 'media-group';
-                gradeDiv.innerHTML = `<div class="media-group-header">${grade}</div>`;
+                const gradeSection = document.createElement('div');
+                gradeSection.className = 'media-group';
+                gradeSection.innerHTML = `<div class="media-group-header">${grade}</div>`;
                 mediaGroups[grade].forEach((group, groupIndex) => {
-                    const slideContainer = document.createElement('div');
-                    slideContainer.className = 'media-slide-container';
+                    const groupDiv = document.createElement('div');
+                    groupDiv.className = 'media-container';
                     group.forEach((item, itemIndex) => {
-                        const slide = document.createElement('div');
-                        slide.className = `media-slide ${itemIndex === 0 ? 'active' : ''}`;
-                        let mediaElement = '';
-                        if (item.type.startsWith('image')) {
-                            mediaElement = `<img src="${item.url}" alt="${item.name}" onclick="openFullscreen('${item.url}')">`;
-                        } else if (item.type.startsWith('video')) {
-                            mediaElement = `<video controls><source src="${item.url}" type="${item.type}"></video>`;
-                        } else if (item.type === 'application/pdf') {
-                            mediaElement = `<embed src="${item.url}" type="application/pdf"><a href="${item.url}" target="_blank">${item.name}</a>`;
-                        } else if (item.type.startsWith('audio')) {
-                            mediaElement = `<audio controls><source src="${item.url}" type="${item.type}"></audio>`;
+                        const mediaDiv = document.createElement('div');
+                        mediaDiv.draggable = true;
+                        if (item.type.startsWith('application/pdf')) {
+                            mediaDiv.className = 'pdf-item';
+                            mediaDiv.innerHTML = `
+                                <embed src="${item.url}" type="application/pdf">
+                                <textarea placeholder="اكتب وصفًا لهذا الملف" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
+                            `;
+                        } else if (item.type.startsWith('image') || item.type === 'image/external') {
+                            mediaDiv.className = 'media-item';
+                            mediaDiv.innerHTML = `
+                                <img src="${item.url}" alt="صورة" onclick="openFullscreen('${item.url}')">
+                                <textarea placeholder="اكتب وصفًا لهذه الصورة" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
+                            `;
+                        } else if (item.type.startsWith('video') || item.type === 'video/external') {
+                            mediaDiv.className = 'media-item';
+                            mediaDiv.innerHTML = `
+                                <video controls src="${item.url}"></video>
+                                <textarea placeholder="اكتب وصفًا لهذا الفيديو" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
+                            `;
+                        } else if (item.type.startsWith('audio') || item.type === 'audio/external') {
+                            mediaDiv.className = 'media-item';
+                            mediaDiv.innerHTML = `
+                                <audio controls src="${item.url}"></audio>
+                                <textarea placeholder="اكتب وصفًا لهذا الصوت" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
+                            `;
                         } else {
-                            mediaElement = `<a href="${item.url}" target="_blank">${item.name}</a>`;
+                            mediaDiv.className = 'pdf-item';
+                            mediaDiv.innerHTML = `
+                                <a href="${item.url}" target="_blank">${item.url}</a>
+                                <textarea placeholder="اكتب وصفًا لهذا الرابط" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
+                            `;
                         }
-                        slide.innerHTML = `
-                            ${mediaElement}
-                            <textarea placeholder="أضف وصفًا" onchange="updateMediaDescription('${grade}', ${groupIndex}, ${itemIndex}, this.value)">${item.description}</textarea>
-                        `;
-                        slideContainer.appendChild(slide);
+                        groupDiv.appendChild(mediaDiv);
                     });
-                    const controls = document.createElement('div');
-                    controls.className = 'media-slide-controls';
-                    controls.innerHTML = `
-                        <button class="nav-btn" onclick="navigateSlide('${grade}', ${groupIndex}, -1)">❮</button>
-                        <button class="delete-btn" onclick="deleteMediaGroup('${grade}', ${groupIndex})">حذف</button>
-                        <button class="nav-btn" onclick="navigateSlide('${grade}', ${groupIndex}, 1)">❯</button>
+                    const controlsDiv = document.createElement('div');
+                    controlsDiv.className = 'media-slide-controls';
+                    controlsDiv.innerHTML = `
+                        <button class="delete-btn" onclick="deleteMediaGroup('${grade}', ${groupIndex})">حذف المجموعة</button>
                     `;
-                    slideContainer.appendChild(controls);
-                    gradeDiv.appendChild(slideContainer);
+                    groupDiv.appendChild(controlsDiv);
+                    gradeSection.appendChild(groupDiv);
                 });
-                container.appendChild(gradeDiv);
+                container.appendChild(gradeSection);
             }
+            console.log('تم تحديث عرض الوسائط بنجاح');
+            setupMediaGestures();
+            setupDragAndDrop();
+        }
+
+        function setupMediaGestures() {
+            const images = document.querySelectorAll('.media-item img');
+            images.forEach(img => {
+                const hammer = new Hammer(img);
+                hammer.get('pinch').set({ enable: true });
+                let scale = 1;
+                hammer.on('pinch', (ev) => {
+                    scale = Math.max(0.5, Math.min(scale * ev.scale, 3));
+                    img.style.transform = `scale(${scale})`;
+                });
+                hammer.on('pinchend', () => {
+                    if (scale === 1) {
+                        img.style.transform = 'scale(1)';
+                    }
+                });
+            });
         }
 
         function navigateSlide(grade, groupIndex, direction) {
-            const slides = document.querySelectorAll(`.media-group:nth-child(${Object.keys(mediaGroups).indexOf(grade) + 1}) .media-slide-container:nth-child(${groupIndex + 2}) .media-slide`);
+            const slides = document.querySelectorAll(`.media-group:nth-child(${Object.keys(mediaGroups).indexOf(grade) + 1}) .media-container:nth-child(${groupIndex + 2}) .media-slide`);
             let currentIndex = Array.from(slides).findIndex(slide => slide.classList.contains('active'));
-            slides[currentIndex].classList.remove('active');
-            currentIndex = (currentIndex + direction + slides.length) % slides.length;
-            slides[currentIndex].classList.add('active');
-        }
-
-        function deleteMediaGroup(grade, groupIndex) {
-            mediaGroups[grade].splice(groupIndex, 1);
-            renderMediaItems();
-            debouncedAutoSave();
+            if (currentIndex === -1) currentIndex = 0;
+            const newIndex = (currentIndex + direction + slides.length) % slides.length;
+            slides.forEach((slide, index) => {
+                slide.classList.toggle('active', index === newIndex);
+            });
         }
 
         function updateMediaDescription(grade, groupIndex, itemIndex, description) {
             mediaGroups[grade][groupIndex][itemIndex].description = description;
             debouncedAutoSave();
+            saveToHistory();
+        }
+
+        function deleteMediaGroup(grade, groupIndex) {
+            if (confirm('هل أنت متأكد من حذف هذه المجموعة؟')) {
+                mediaGroups[grade].splice(groupIndex, 1);
+                renderMediaItems();
+                debouncedAutoSave();
+                saveToHistory();
+            }
         }
 
         function openFullscreen(url) {
-            imageSources = [];
-            currentImageIndex = -1;
-            currentScale = 1;
-            translateX = 0;
-            translateY = 0;
-            for (const grade in mediaGroups) {
-                mediaGroups[grade].forEach(group => {
-                    group.forEach(item => {
-                        if (item.type.startsWith('image')) {
-                            imageSources.push(item.url);
-                            if (item.url === url) {
-                                currentImageIndex = imageSources.length - 1;
-                            }
-                        }
-                    });
-                });
-            }
-            if (currentImageIndex >= 0) {
-                const overlay = document.getElementById('fullscreenOverlay');
-                const fullscreenImage = document.getElementById('fullscreenImage');
-                fullscreenImage.src = url;
-                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-                overlay.style.display = 'flex';
-
-                // إضافة معالجات أحداث اللمس
-                fullscreenImage.addEventListener('touchstart', handleTouchStart);
-                fullscreenImage.addEventListener('touchmove', handleTouchMove);
-                fullscreenImage.addEventListener('touchend', handleTouchEnd);
-            }
+            const fullscreenImage = document.getElementById('fullscreenImage');
+            imageSources = Array.from(document.querySelectorAll('.media-item img')).map(img => img.src);
+            currentImageIndex = imageSources.indexOf(url);
+            fullscreenImage.src = url;
+            document.getElementById('fullscreenOverlay').style.display = 'flex';
+            setupFullscreenGestures();
         }
 
         function closeFullscreen() {
-            const overlay = document.getElementById('fullscreenOverlay');
-            const fullscreenImage = document.getElementById('fullscreenImage');
-            overlay.style.display = 'none';
+            document.getElementById('fullscreenOverlay').style.display = 'none';
             currentImageIndex = -1;
             imageSources = [];
-            currentScale = 1;
-            translateX = 0;
-            translateY = 0;
-            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-            fullscreenImage.removeEventListener('touchstart', handleTouchStart);
-            fullscreenImage.removeEventListener('touchmove', handleTouchMove);
-            fullscreenImage.removeEventListener('touchend', handleTouchEnd);
         }
 
         function navigateImages(direction) {
-            if (imageSources.length === 0) return;
             currentImageIndex = (currentImageIndex + direction + imageSources.length) % imageSources.length;
-            const fullscreenImage = document.getElementById('fullscreenImage');
-            fullscreenImage.src = imageSources[currentImageIndex];
-            currentScale = 1;
-            translateX = 0;
-            translateY = 0;
-            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+            document.getElementById('fullscreenImage').src = imageSources[currentImageIndex];
         }
 
-        function zoomImage(delta) {
+        function setupFullscreenGestures() {
             const fullscreenImage = document.getElementById('fullscreenImage');
-            currentScale = Math.max(0.1, Math.min(5, currentScale + delta));
-            if (currentScale <= 1) {
-                translateX = 0;
-                translateY = 0;
-            }
-            fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-        }
-
-        function handleTouchStart(event) {
-            event.preventDefault();
-            const touches = event.touches;
-            if (touches.length === 1) {
-                isDragging = true;
-                startX = touches[0].clientX - translateX;
-                startY = touches[0].clientY - translateY;
-                document.getElementById('fullscreenImage').classList.add('dragging');
-            } else if (touches.length === 2) {
-                const dx = touches[0].clientX - touches[1].clientX;
-                const dy = touches[0].clientY - touches[1].clientY;
-                pinchStartDistance = Math.sqrt(dx * dx + dy * dy);
-            }
-        }
-
-        function handleTouchMove(event) {
-            event.preventDefault();
-            const touches = event.touches;
-            const fullscreenImage = document.getElementById('fullscreenImage');
-            if (touches.length === 1 && isDragging) {
-                translateX = touches[0].clientX - startX;
-                translateY = touches[0].clientY - startY;
-                const img = fullscreenImage;
-                const rect = img.getBoundingClientRect();
-                const maxTranslateX = (rect.width * currentScale - window.innerWidth) / (2 * currentScale);
-                const maxTranslateY = (rect.height * currentScale - window.innerHeight) / (2 * currentScale);
-                translateX = Math.max(-maxTranslateX, Math.min(maxTranslateX, translateX));
-                translateY = Math.max(-maxTranslateY, Math.min(maxTranslateY, translateY));
-                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-            } else if (touches.length === 2) {
-                const dx = touches[0].clientX - touches[1].clientX;
-                const dy = touches[0].clientY - touches[1].clientY;
-                const currentDistance = Math.sqrt(dx * dx + dy * dy);
-                const scaleChange = currentDistance / pinchStartDistance;
-                currentScale = Math.max(0.1, Math.min(5, currentScale * scaleChange));
-                if (currentScale <= 1) {
-                    translateX = 0;
-                    translateY = 0;
+            const hammer = new Hammer(fullscreenImage);
+            hammer.get('pinch').set({ enable: true });
+            let scale = 1;
+            hammer.on('pinch', (ev) => {
+                scale = Math.max(0.5, Math.min(scale * ev.scale, 3));
+                fullscreenImage.style.transform = `scale(${scale})`;
+            });
+            hammer.on('pinchend', () => {
+                if (scale === 1) {
+                    fullscreenImage.style.transform = 'scale(1)';
                 }
-                pinchStartDistance = currentDistance;
-                const img = fullscreenImage;
-                const rect = img.getBoundingClientRect();
-                const maxTranslateX = (rect.width * currentScale - window.innerWidth) / (2 * currentScale);
-                const maxTranslateY = (rect.height * currentScale - window.innerHeight) / (2 * currentScale);
-                translateX = Math.max(-maxTranslateX, Math.min(maxTranslateX, translateX));
-                translateY = Math.max(-maxTranslateY, Math.min(maxTranslateY, translateY));
-                fullscreenImage.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
-            }
+            });
+            hammer.on('swipeleft', () => navigateImages(1));
+            hammer.on('swiperight', () => navigateImages(-1));
         }
 
-        function handleTouchEnd(event) {
-            isDragging = false;
-            document.getElementById('fullscreenImage').classList.remove('dragging');
-            pinchStartDistance = 0;
+        function setupDragAndDrop() {
+            const mediaItems = document.querySelectorAll('.media-item, .pdf-item');
+            mediaItems.forEach(item => {
+                item.addEventListener('dragstart', (e) => {
+                    item.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', item.innerHTML);
+                });
+                item.addEventListener('dragend', () => {
+                    item.classList.remove('dragging');
+                });
+            });
+
+            const containers = document.querySelectorAll('.media-container');
+            containers.forEach(container => {
+                container.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                });
+                container.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const data = e.dataTransfer.getData('text/plain');
+                    const draggedItem = document.createElement('div');
+                    draggedItem.innerHTML = data;
+                    container.appendChild(draggedItem.firstChild);
+                    item.classList.remove('dragging');
+                });
+            });
         }
+
+        // إضافة حدث للسحب والإفلات لجدول الكشف
+        const tableRows = document.querySelectorAll('#dailyTable tbody tr');
+        tableRows.forEach(row => {
+            row.addEventListener('dragstart', (e) => {
+                row.classList.add('dragging');
+                e.dataTransfer.setData('text/plain', row.rowIndex);
+            });
+            row.addEventListener('dragend', () => {
+                row.classList.remove('dragging');
+            });
+            row.addEventListener('dragover', (e) => {
+                e.preventDefault();
+            });
+            row.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+                const toIndex = row.rowIndex;
+                if (fromIndex !== toIndex) {
+                    const draggedStudent = students.splice(fromIndex - 1, 1)[0];
+                    students.splice(toIndex - 1, 0, draggedStudent);
+                    renderKashfTable();
+                    debouncedAutoSave();
+                    saveToHistory();
+                }
+            });
+        });
     </script>
 </body>
 </html>
